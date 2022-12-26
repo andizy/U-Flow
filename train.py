@@ -11,7 +11,7 @@ import normflow as nf
 from utils import *
 from unet import encoder_unet, decoder_unet, UNet
 from torch.utils.data.sampler import SubsetRandomSampler
-from data_loader import scattering_dataloader, general_dataloader
+from data_loader import scattering_dataloader, general_dataloader, DatasetLoader, load_dataset
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -49,51 +49,17 @@ if os.path.exists(exp_path) == False:
     os.mkdir(exp_path)
 
 
-data_folder = 'dataset/'
-if input_type == 'full':
-    address = data_folder + 'full'
 
-elif input_type == 'limited-view':
-    address = data_folder + 'limited-view'
-
-
-
-if dataset == 'scattering':
-
-    gt_train  = scattering_dataloader(address+'/gt/', typei='gt')
-    gt_test  = scattering_dataloader(address+'/gt_test/', typei='gt')
-
-    measure_train  = scattering_dataloader(address + '/y/',typei = 'bp')
-    measure_test  = scattering_dataloader(address + '/y_test/',typei = 'bp')
-
-
-
-else:
-
-    train_dataset = Dataset_loader(dataset = dataset ,size = (image_size,image_size), c = c)
+#load the dataset 
+train_dataset, test_dataset = load_dataset()
  
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size,
+                                        shuffle = True,num_workers=8)
 
-
-if dataset =='scattering':
-
-    train_loader_gt = torch.utils.data.DataLoader(gt_train, batch_size=batch_size,
-                                           num_workers=32)
-    train_loader_measure = torch.utils.data.DataLoader(measure_train, batch_size=batch_size,
-                                           num_workers=32)
-
-    test_loader_gt = torch.utils.data.DataLoader(gt_test, batch_size=batch_size,
-                                           num_workers=32)
-    test_loader_measure = torch.utils.data.DataLoader(measure_test, batch_size=batch_size,
-                                           num_workers=32)
-
-else:
-
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler,
-                                           num_workers=32)
-    test_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, sampler=test_sampler,
-                                           num_workers=32)
-
-ntrain = len(gt_train)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size,
+                                        shuffle = True,num_workers=8)
+    
+ntrain = len(train_dataset)
 
 learning_rate = 1e-4
 step_size = 50
@@ -119,10 +85,10 @@ dec = decoder_unet(n_classes = 1 ,init_features = 32, res = image_size).to(devic
 unet = UNet(encoder= enc, decoder = dec).to(device)
 
 
-test_images = next(iter(test_loader_measure)).to(device)
+test_images = next(iter(train_loader))
 # test_images = test_images.repeat(1,1,8,8)
 
-embed, _ = unet(test_images,'encoder')
+embed, _ = unet(test_images[1].to(device),'encoder')
 #unet = UNet(n_channels=c, n_classes=c, init_features = 32, res = image_size).to(device)
 
 num_param_unet= count_parameters(unet)
@@ -150,7 +116,7 @@ if train_unet:
         t1 = default_timer()
         loss_unet_epoch = 0
 
-        for measure,gt in zip(train_loader_measure, train_loader_gt):
+        for gt,measure in train_loader:
 
             batch_size = measure.shape[0]
             measure = measure.to(device)
@@ -209,12 +175,15 @@ if train_unet:
             sample_number = 4
             ngrid = int(np.sqrt(sample_number))
 
-            test_images_measure = next(iter(test_loader_measure)).to(device)
-            test_images_measure = test_images_measure[:sample_number]
+            # test_images_measure = next(iter(test_loader_measure)).to(device)
+            # test_images_gt = next(iter(test_loader_gt)).to(device)
+            test_images_gt,test_images_measure = next(iter(test_loader))
+            test_images_gt = test_images_gt.to(device)
+            test_images_measure = test_images_measure.to(device)
             # test_images_measure = test_images_measure.repeat(1,1,8,8)
 
-            test_images_gt = next(iter(test_loader_gt)).to(device)
             test_images_gt = test_images_gt[:sample_number]
+            test_images_measure = test_images_measure[:sample_number]
 
             embedi, resii = unet(test_images_measure,dir = 'encoder')
             generated_embed = unet(embedi,resii, dir = 'decoder')
@@ -228,7 +197,7 @@ if train_unet:
                                 1,image_size, image_size]).transpose(0,2,3,1)
             low_res = low_res[:sample_number, :, :, ::-1].reshape(
                 ngrid, ngrid,
-                image_size, image_size, 1).swapaxes(1, 2).reshape(ngrid*image_size, -1, 1)
+                image_size, image_size, 1).swapaxes(1, 2).reshape(ngrid*image_size, -1, 1) * 255.0
 
 
             generated_samples = generated_embed.detach().cpu().numpy()
@@ -239,7 +208,7 @@ if train_unet:
 
             generated_samples = generated_samples[:sample_number, :, :, ::-1].reshape(
                 ngrid, ngrid,
-                image_size, image_size, 1).swapaxes(1, 2).reshape(ngrid*image_size, -1, 1)
+                image_size, image_size, 1).swapaxes(1, 2).reshape(ngrid*image_size, -1, 1) * 255.0
 
             test_images = test_images_gt.detach().cpu().numpy()
             image_np = test_images.transpose(0,2,3,1)
@@ -248,14 +217,14 @@ if train_unet:
                                 1,image_size, image_size]).transpose(0,2,3,1)
             test_images = test_images[:sample_number, :, :, ::-1].reshape(
                 ngrid, ngrid,
-                image_size, image_size, 1).swapaxes(1, 2).reshape(ngrid*image_size, -1, 1)
+                image_size, image_size, 1).swapaxes(1, 2).reshape(ngrid*image_size, -1, 1) * 255.0
 
-            #cv2.imwrite(os.path.join(image_path_reconstructions, 'epoch %d_output.png' % (ep,)), generated_samples) # training images
-            #cv2.imwrite(os.path.join(image_path_reconstructions, 'epoch %d_input.png' % (ep,)), low_res) # training images
-            #cv2.imwrite(os.path.join(image_path_reconstructions, 'epoch %d_gt.png' % (ep,)), test_images) # training images
-            plt.imsave(os.path.join(image_path_reconstructions, 'epoch %d_output.png' % (ep,)) ,generated_samples[:,:,0] , cmap='seismic')
-            plt.imsave(os.path.join(image_path_reconstructions, 'epoch %d_input.png' % (ep,)) ,low_res[:,:,0] , cmap='seismic')
-            plt.imsave(os.path.join(image_path_reconstructions, 'epoch %d_gt.png' % (ep,)) ,test_images[:,:,0] , cmap='seismic')
+            # cv2.imwrite(os.path.join(image_path_reconstructions, 'epoch %d_output.png' % (ep,)), generated_samples) # training images
+            # cv2.imwrite(os.path.join(image_path_reconstructions, 'epoch %d_input.png' % (ep,)), low_res) # training images
+            # cv2.imwrite(os.path.join(image_path_reconstructions, 'epoch %d_gt.png' % (ep,)), test_images) # training images
+            plt.imsave(os.path.join(image_path_reconstructions, 'epoch %d_output.png' % (ep,)) ,generated_samples[:,:,0] , cmap='gray')
+            plt.imsave(os.path.join(image_path_reconstructions, 'epoch %d_input.png' % (ep,)) ,low_res[:,:,0] , cmap='gray')
+            plt.imsave(os.path.join(image_path_reconstructions, 'epoch %d_gt.png' % (ep,)) ,test_images[:,:,0] , cmap='gray')
             
 
             psnr_unet = PSNR(image_np , image_recon_out)
@@ -309,7 +278,8 @@ if train_flow:
     scheduler_flow = torch.optim.lr_scheduler.StepLR(optimizer_flow, step_size=step_size, gamma=gamma)
     
     # Initialize ActNorm
-    batch_img = next(iter(train_loader_measure)).to(device)
+    batch_img = next(iter(train_loader))[1]
+    batch_img = batch_img.to(device)
     embed_batch_img , _ = unet(batch_img,'encoder')
     print(embed_batch_img.shape)
     embed_batch_img = squeeze_inverse(embed_batch_img,f)
@@ -328,7 +298,7 @@ if train_flow:
         nfm.train()
         t1 = default_timer()
         loss_flow_epoch = 0
-        for measure , gt in zip(train_loader_measure, train_loader_gt):
+        for gt, measure  in train_loader:
             optimizer_flow.zero_grad()
 
             measure = measure.to(device)
@@ -378,27 +348,22 @@ if train_flow:
             n_sample_show = 3 # Number of posterior samples to show for each test sample
             n_average = 25
 
-            test_images = next(iter(test_loader_gt)).to(device)
+            test_images,yy_test = next(iter(test_loader))
+            test_images = test_images.to(device)
+            yy_test = yy_test.to(device)
             test_images = test_images[:n_average]
-            yy_test = next(iter(test_loader_measure)).to(device)
-            # yy_test = yy_test.repeat(1,1,8,8)
             yy_test = yy_test[:n_average]
             print(test_images.min() , test_images.max())
 
             x_sampled_conditional, psnr_MMSE , SSIM_MMSE = conditional_sampling(nfm, unet, test_images , yy_test ,device,squeeze, f, n_average , n_test  ,n_sample_show)
 
-            #cv2.imwrite(os.path.join(image_path_generated, 'conditional_sampled_epoch %d.png' % (ep,)),
-                #                x_sampled_conditional[:, :, :, ::-1].reshape(
-               #         n_test, n_sample_show + 4,
-              #          image_size, image_size, 1).swapaxes(1, 2)
-             #           .reshape(n_test*image_size, -1, 1)*255.0)
             dd=x_sampled_conditional[:, :, :, ::-1].reshape(n_test, n_sample_show + 4,
-                image_size, image_size, 1).swapaxes(1, 2).reshape(n_test*image_size, -1, 1)
+                image_size, image_size, 1).swapaxes(1, 2).reshape(n_test*image_size, -1, 1) * 255.0 
 
             np.save(os.path.join(image_path_generated, 'conditional_sampled_epoch %d.npy' % (ep,)), dd)
             
             plt.imsave(os.path.join(image_path_generated, 'conditional_sampled_epoch %d.png' % (ep,)),
-                 dd[:,:,0], cmap='seismic')
+                 dd[:,:,0], cmap='gray')
         
             
             with open(os.path.join(exp_path, 'results.txt'), 'a') as file:

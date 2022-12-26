@@ -4,6 +4,10 @@ import numpy as np
 import torch
 from torchvision import transforms
 from PIL import Image
+import torchvision
+from torchvision.datasets import ImageFolder
+from torchdata.datapipes.map import SequenceWrapper
+from torch.utils.data import random_split
 
 
 class scattering_dataloader(torch.utils.data.Dataset):
@@ -83,4 +87,57 @@ class general_dataloader(torch.utils.data.Dataset):
 
         return img
     
-  
+class DatasetLoader(torch.utils.data.Dataset):
+    def __init__(self, 
+        size=(32,32), 
+        c = 1,
+        missing_cone = 'horizontal',
+        cond = False,
+        ):
+        self.transform = transforms.Compose([
+            transforms.Resize(size),
+            transforms.ToTensor(),
+            
+        ])
+
+        self.c = c
+        self.transform = transforms.Compose([
+        transforms.Resize(size),
+        transforms.Grayscale(),
+        transforms.ToTensor(),
+        ])
+        x_limited_ct_path = '/raid/Amir/Projects/datasets/CT_dataset/images/gt_train'
+        self.img_dataset = ImageFolder(x_limited_ct_path, self.transform)
+        if cond:
+            if missing_cone == "vertical":
+                y_folder = "/raid/Amir/Projects/datasets/CT_dataset/images/fbp_train_vertical_snr_40"
+            else:
+                y_folder = "/raid/Amir/Projects/datasets/CT_dataset/images/fbp_train_horizontal_snr_40"
+            self.img_dataset = ImageFolder(y_folder, self.transform)
+
+            
+
+    def __len__(self):
+        return len(self.img_dataset)
+
+    def __getitem__(self, item):
+        img = self.img_dataset[item][0]
+        img = transforms.ToPILImage()(img)
+        img = self.transform(img)
+        return img  
+
+def load_dataset(test_pct=0.1, img_size=(128,128), c=1, cond=True):
+    
+    dataset = DatasetLoader(size = img_size, c = c, cond = False)
+    y_dataset = DatasetLoader(
+        size = img_size,
+        c=c,
+        cond=True,
+    )
+    dataset = SequenceWrapper(dataset)
+    y_dataset = SequenceWrapper(y_dataset)
+    dataset = dataset.zip(y_dataset)
+    test_size = int(len(dataset) * test_pct)
+    train_size = int(len(dataset) - test_size)
+    train_ds, test_ds = random_split(dataset, [train_size, test_size])
+    return train_ds, test_ds

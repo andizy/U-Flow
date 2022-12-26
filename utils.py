@@ -155,7 +155,7 @@ def flags():
     parser.add_argument(
         '--res',
         type=int,
-        default=128,
+        default=64,
         help='Resolution of the dataset')
     
     parser.add_argument(
